@@ -1,9 +1,17 @@
+-- This file was automatically generated for the LuaDist project.
+
 package = "shelve"
-version = "0.35.0-1"
+version = "0.35.0-2"
+-- LuaDist source
 source = {
-   url = "git://github.com/aperezdc/lua-shelve",
-   tag = "v0.35.0"
+  tag = "0.35.0-2",
+  url = "git://github.com/LuaDist-testing/shelve.git"
 }
+-- Original source
+-- source = {
+--    url = "git://github.com/aperezdc/lua-shelve",
+--    tag = "v0.35.0"
+-- }
 description = {
    summary = "Serialization and on-disk persistence for Lua values",
    detailed = [[
@@ -15,7 +23,7 @@ description = {
    license = "LGPLv2"
 }
 dependencies = {
-   "lua ~= 5.1"
+   "lua >= 5.1"
 }
 external_dependencies = {
    LIBGDBM = {
