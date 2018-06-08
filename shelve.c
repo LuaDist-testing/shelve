@@ -37,15 +37,26 @@
 # define LUALIB_API API
 #endif
 
+#if LUA_VERSION_NUM < 502
+static void
+luaL_setmetatable(lua_State *L, const char *name)
+{
+    lua_pushstring(L, name);
+    lua_gettable(L, LUA_REGISTRYINDEX);
+    lua_setmetatable(L, -2);
+    lua_remove(L, -2);
+}
+#endif
+
 
 /* Function protos */
-int l_shelve_index(lua_State*);
-int l_shelve_nindex(lua_State*);
-int l_shelve_trv(lua_State*);
-int l_shelve_gc(lua_State*);
-int l_shelve_open(lua_State*);
-int l_shelve_tostring(lua_State*);
-
+static int l_shelve_index(lua_State*);
+static int l_shelve_nindex(lua_State*);
+static int l_shelve_trv(lua_State*);
+static int l_shelve_gc(lua_State*);
+static int l_shelve_open(lua_State*);
+static int l_shelve_tostring(lua_State*);
+static int l_shelve_iter_gc(lua_State*);
 
 /* Lua userdata type */
 typedef struct shelve_file_t {
@@ -57,7 +68,6 @@ typedef struct shelve_file_t {
 /* Metatable items */
 
 
-#define SHELVE_META_ITEMS 5
 static luaL_Reg meta[] =
 {
     { "__index",    l_shelve_index    },
@@ -65,48 +75,51 @@ static luaL_Reg meta[] =
     { "__call",     l_shelve_trv      },
     { "__gc",       l_shelve_gc       },
     { "__tostring", l_shelve_tostring },
+    { NULL,         NULL              },
+};
+
+static luaL_Reg iter_meta[] =
+{
+    { "__gc", l_shelve_iter_gc },
+    { NULL,   NULL             },
+};
+
+static luaL_Reg lib[] =
+{
+    { "open",      l_shelve_open      },
+    { "marshal",   l_shelve_marshal   },
+    { "unmarshal", l_shelve_unmarshal },
+    { NULL,        NULL               },
 };
 
 
 LUALIB_API int
 luaopen_shelve(lua_State *L)
 {
-    unsigned i;
-
     assert(L);
 
-    /* This is more polite to loadmodule and luacheia */
-    if (lua_gettop(L) == 0) {
-        lua_pushstring(L, "shelve");
-    } else {
-        luaL_checktype(L, -1, LUA_TSTRING);
-    }
+    /* Shelve file metatable */
+    luaL_newmetatable(L, SHELVE_REGISTRY_KEY);
+#if LUA_VERSION_NUM < 502
+    luaL_register(L, NULL, meta);
+#else
+    luaL_setfuncs(L, meta, 0);
+#endif
 
-    /* Create the namespace table. */
-    lua_newtable(L);
+    /* Shelve file iterator metatable */
+    luaL_newmetatable(L, SHELVE_ITER_META);
+#if LUA_VERSION_NUM < 502
+    luaL_register(L, NULL, iter_meta);
+#else
+    luaL_setfuncs(L, iter_meta, 0);
+#endif
 
-    /* Create the metatable. */
-    lua_pushstring(L, SHELVE_REGISTRY_KEY);
-    lua_newtable(L);
-    for (i=0 ; i<SHELVE_META_ITEMS ; i++) {
-        lua_pushstring(L, meta[i].name);
-        lua_pushcfunction(L, meta[i].func);
-        lua_rawset(L, -3);
-    }
-    lua_settable(L, LUA_REGISTRYINDEX);
-
-    /* Set the "open" function. */
-    lua_pushstring(L, "open");
-    lua_pushcfunction(L, l_shelve_open);
-    lua_rawset(L, -3);
-
-    /* Set the marshal/unmarshal functions. */
-    lua_pushstring(L, "marshal");
-    lua_pushcfunction(L, l_shelve_marshal);
-    lua_rawset(L, -3);
-    lua_pushstring(L, "unmarshal");
-    lua_pushcfunction(L, l_shelve_unmarshal);
-    lua_rawset(L, -3);
+    /* Module */
+#if LUA_VERSION_NUM < 502
+    luaL_register(L, "shelve", lib);
+#else
+    luaL_newlib(L, lib);
+#endif
 
     return 1;
 }
@@ -155,10 +168,7 @@ l_shelve_open(lua_State *L)
     udata->rdonly = (flags == ANYDB_READ);
 
     /* Associate metatable with userdata. */
-    lua_pushstring(L, SHELVE_REGISTRY_KEY);
-    lua_gettable(L, LUA_REGISTRYINDEX);
-    lua_setmetatable(L, -2);
-    lua_remove(L, -2);
+    luaL_setmetatable(L, SHELVE_REGISTRY_KEY);
 
     return 1;
 }
@@ -238,40 +248,42 @@ l_shelve_nindex(lua_State *L)
 }
 
 
+struct dbiter {
+    anydb_t *dbh;
+    datum k;
+};
+
+static int
+l_shelve_trv_next(lua_State *L)
+{
+    datum k;
+    struct dbiter *i = (struct dbiter*) lua_touserdata(L, lua_upvalueindex(1));
+    if (i->k.dptr) {
+        lua_pushlstring(L, i->k.dptr, (size_t) i->k.dsize);
+        k = i->k;
+        i->k = anydb_nextkey(*i->dbh, k);
+        xfree(k.dptr);
+        return 1;
+    }
+    return 0;
+}
+
+static int
+l_shelve_iter_gc(lua_State *L)
+{
+    struct dbiter *i = (struct dbiter*) lua_touserdata(L, -1);
+    xfree(i->k.dptr);
+}
+
 int
 l_shelve_trv(lua_State *L)
 {
-    anydb_t *dbh;
-    datum k, tk;
-
-    assert(L);
-    assert(lua_gettop(L) == 1);
-    assert(lua_isuserdata(L, -1));
-
-    dbh = (anydb_t*) lua_touserdata(L, -1);
-    lua_pop(L, 1);
-
-    /*
-     * A table containing all the keys is returned, all the keys
-     * are assigned to 'true' boolean values. This is useful to
-     * write Lua code similar to the following:
-     *
-     *    db = shelve.open("test.db")
-     *    for key in db() do
-     *        print("key: " .. key, "data: " .. db[key])
-     *    end
-     *
-     */
-    lua_newtable(L);
-    for (k=anydb_firstkey(*dbh) ;
-         k.dptr ;
-         tk=k, k=anydb_nextkey(*dbh, k), xfree(tk.dptr))
-    {
-        lua_pushlstring(L, k.dptr, (size_t) k.dsize);
-        lua_pushboolean(L, 1);
-        lua_rawset(L, -3);
-    }
-
+    anydb_t *dbh = (anydb_t*) luaL_checkudata(L, -1, SHELVE_REGISTRY_KEY);
+    struct dbiter *i = lua_newuserdata(L, sizeof(struct dbiter));
+    luaL_setmetatable(L, SHELVE_ITER_META);
+    i->k = anydb_firstkey(*dbh);
+    i->dbh = dbh;
+    lua_pushcclosure(L, l_shelve_trv_next, 1);
     return 1;
 }
 

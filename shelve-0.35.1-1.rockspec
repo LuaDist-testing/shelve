@@ -1,16 +1,16 @@
 -- This file was automatically generated for the LuaDist project.
 
 package = "shelve"
-version = "0.35.0-2"
+version = "0.35.1-1"
 -- LuaDist source
 source = {
-  tag = "0.35.0-2",
+  tag = "0.35.1-1",
   url = "git://github.com/LuaDist-testing/shelve.git"
 }
 -- Original source
 -- source = {
 --    url = "git://github.com/aperezdc/lua-shelve",
---    tag = "v0.35.0"
+--    tag = "v0.35.1"
 -- }
 description = {
    summary = "Serialization and on-disk persistence for Lua values",
